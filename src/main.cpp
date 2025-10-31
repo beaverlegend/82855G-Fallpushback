@@ -30,14 +30,18 @@ pros::Controller controller(pros::E_CONTROLLER_MASTER);
  * When this callback is fired, it will toggle line 2 of the LCD text between
  * "I was pressed!" and nothing.
  */
-void on_center_button() {
+void on_center_button()
+{
 	static bool pressed = false;
 	pressed = !pressed;
-	if (pressed) {
+	if (pressed)
+	{
 		pros::lcd::set_text(2, "I was pressed!");
-	} else {
+	}
+	else
+	{
 		pros::lcd::clear_line(2);
-	}\
+	}
 }
 
 /**
@@ -104,13 +108,7 @@ lemlib::Chassis chassis(drivetrain,			// drivetrain settings
 											// &throttle_curve, &steer_curve
 );
 
-/**
-void initialize() {
-	pros::lcd::initialize();
-	pros::lcd::set_text(1, "Hello PROS User!");
 
-	pros::lcd::register_btn1_cb(on_center_button);
-}
 
 /**
  * Runs while the robot is in the disabled state of Field Management System or
@@ -128,6 +126,56 @@ void disabled() {}
  * This task will exit when the robot is enabled and autonomous or opcontrol
  * starts.
  */
+//variables
+double WheelPos;
+double target = 0;
+double toutput = 0;
+bool holdEnabled = true;
+pros::Task *holdTask = nullptr;
+double holdTarget = 0;
+bool scoring = false;
+void frontWheelHoldTask(void *)
+{
+	const double tkP = 2.0;
+	const double tkI = 0;
+	const double tkD = 2.0;
+
+	double terror = 0;
+	double tprevious_error = 0;
+	double tintegral = 0;
+	double tderivative = 0;
+
+	while (true)
+	{
+		if (!holdEnabled)
+		{
+			LastWheel.move(0);
+			pros::delay(20);
+			continue;
+		}
+
+		// Use the *global* holdTarget, not a local variable
+		double currentPos = LastWheel.get_position() / 100.0;
+		terror = holdTarget - currentPos;
+		tintegral += terror;
+		tderivative = terror - tprevious_error;
+
+		double toutput = tkP * terror + tkI * tintegral + tkD * tderivative;
+		LastWheel.move(toutput);
+
+		tprevious_error = terror;
+		pros::delay(20);
+	}
+}
+
+void initialize()
+{
+	pros::lcd::initialize();
+	holdTask = new pros::Task(frontWheelHoldTask, nullptr, "Hold Task");
+	holdTarget = LastWheel.get_position() / 100.0;
+
+}
+
 void competition_initialize() {}
 
 /**
@@ -156,75 +204,109 @@ void autonomous() {}
  * operator control task will be stopped. Re-enabling the robot will restart the
  * task, not resume it from where it left off.
  */
-//bools
+// bools
 bool IntakeToggle = false;
 bool IntakeReverse = false;
 bool IntakeEject = false;
-void opcontrol() {
+bool liftpress = false;
+bool scraper = false;
+bool tounguepress = false;
+void opcontrol()
+{
 	pros::Controller master(pros::E_CONTROLLER_MASTER);
 
-
-
-	while (true) {
+	while (true)
+	{
 		pros::lcd::print(0, "%d %d %d", (pros::lcd::read_buttons() & LCD_BTN_LEFT) >> 2,
-		                 (pros::lcd::read_buttons() & LCD_BTN_CENTER) >> 1,
-		                 (pros::lcd::read_buttons() & LCD_BTN_RIGHT) >> 0);  // Prints status of the emulated screen LCDs
+						 (pros::lcd::read_buttons() & LCD_BTN_CENTER) >> 1,
+						 (pros::lcd::read_buttons() & LCD_BTN_RIGHT) >> 0); // Prints status of the emulated screen LCDs
 
 		// Arcade control scheme
 		int leftY = controller.get_analog(pros::E_CONTROLLER_ANALOG_LEFT_Y);
 		int rightX = controller.get_analog(pros::E_CONTROLLER_ANALOG_RIGHT_X);
 
 		// move the robot
-		chassis.arcade(leftY, rightX);
-		
-		if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_X)){
-			IntakeToggle = !IntakeToggle;
-			IntakeEject = false;
-			IntakeReverse = false;
-
-			if (IntakeToggle)
-			{
-				Intake_mg.move(-127);
-			}
-			else
-			{
-				Intake_mg.move(0);
-			}
-		}
-
-		if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B))
+		chassis.arcade(leftY, rightX*0.8);
+		// index
+		//  Indexing (R1)
+		if (master.get_digital(pros::E_CONTROLLER_DIGITAL_R1))
 		{
-			IntakeReverse = !IntakeReverse;
-			IntakeToggle = false;
-			IntakeEject = false;
-
-			if (IntakeReverse)
-			{
-				Intake_mg.move(127);
-			}
-			else
-			{
-				Intake_mg.move(0);
-			}
+			holdEnabled = false; // disable hold while moving
+			Intake_index_mg.move(-127);
+			liftpress = false;
+			lift.set_value(false);
 		}
-		if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_A))
+		// Scoring (L1)
+		else if (master.get_digital(pros::E_CONTROLLER_DIGITAL_L1))
 		{
-			IntakeEject = !IntakeEject;
-			IntakeToggle = false;
-			IntakeReverse = false;
+			holdEnabled = false;
+			Intake_mg.move(-127);
+		}
+		// Reverse intake (R2)
+		else if (master.get_digital(pros::E_CONTROLLER_DIGITAL_R2))
+		{
+			holdEnabled = false;
+			Intake_mg.move(127);
+		}
+		// Nothing pressed — stop and re-enable hold
+		else
+		{
+			Intake_index_mg.move(0);
+			Intake_mg.move(0);
+			Intake_eject_mg.move(0);
 
-			if (IntakeEject)
+			// If we just released a button, capture the current position as new hold target
+			if (!holdEnabled)
 			{
-				Intake_eject_mg.move(-127);
+				holdTarget = LastWheel.get_position() / 100.0;
+				holdEnabled = true;
+			}
+		}
+
+		if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_RIGHT)){
+			liftpress = !liftpress;
+			if (liftpress){
+
+			lift.set_value(true);	
+
+			}
+			else{
+
+			lift.set_value(false);
+			}
+		}
+
+		if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_LEFT)){
+			tounguepress = !tounguepress;
+			if (tounguepress)
+			{
+
+				Toungue.set_value(true);
 			}
 			else
 			{
-				Intake_eject_mg.move(0);
+
+				Toungue.set_value(false);
 			}
 		}
-
-		
-		}
-			// Sets right motor voltage
-			pros::delay(25); // Run for 20 ms then update
 	}
+		// if (master.get_digital_new_press(pros::E_CONTROLLER_DIGITAL_Y))
+		// {
+		// 	scraper = !scraper;
+		// 	if (scraper)
+		// 	{
+
+		// 		scrape.set_value(true);
+		// 	}
+		// 	else
+		// 	{
+
+		// 		scrape.set_value(false);
+		// 	}
+		// }
+
+	// Sets right motor voltage
+	pros::delay(25); // Run for 20 ms then update
+	}
+
+
